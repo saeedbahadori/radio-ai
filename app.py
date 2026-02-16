@@ -141,3 +141,28 @@ def chat(req: ChatRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+from fastapi.responses import FileResponse
+
+@app.post("/generate-audio")
+def generate_audio(text: str):
+
+    try:
+        speech = client.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice="alloy",
+            input=text
+        )
+
+        file_path = "radio_output.mp3"
+
+        with open(file_path, "wb") as f:
+            f.write(speech.content)
+
+        return FileResponse(
+            file_path,
+            media_type="audio/mpeg",
+            filename="radio_program.mp3"
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
