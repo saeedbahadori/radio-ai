@@ -1,148 +1,143 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from openai import OpenAI
 import os
+from openai import OpenAI
 
-app = FastAPI(title="Radio AI")
+app = FastAPI()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # -----------------------------
-# Models
+# Conversation State
+# -----------------------------
+state = {
+    "step": "ask_topic",
+    "topic": None,
+    "duration": None,
+    "tone": None,
+    "script": None
+}
+
+# -----------------------------
+# Request Model
 # -----------------------------
 class ChatRequest(BaseModel):
     message: str
 
 
 # -----------------------------
-# Conversation State
+# AI Prompt
 # -----------------------------
-state = {
-    "stage": "ASK_TOPIC",
-    "topic": "",
-    "script": ""
-}
+SYSTEM_PROMPT = """
+تو یک گوینده و تهیه‌کننده حرفه‌ای رادیو به نام Radio AI هستی.
 
-conversation_history = []
-
-# -----------------------------
-# Prompts
-# -----------------------------
-RADIO_WRITER_PROMPT = """
-تو نویسنده حرفه‌ای برنامه رادیویی هستی.
-یک متن اجرای رادیویی کوتاه و شنیداری بنویس.
-حداکثر 6 جمله.
-لحن گرم و جذاب.
+ویژگی‌ها:
+- لحن گرم و رادیویی
+- پاسخ کوتاه (حداکثر 3 جمله)
+- طبیعی و شنیداری
+- فارسی روان
+- حس شاعرانه ملایم
 """
 
-STYLE_PROMPT = """
-متن زیر را با مشخصات اجرایی جدید بازنویسی کن:
-
-- لحن اجرا
-- جنس صدا
-- سبک برنامه
-
-متن:
-"""
 
 # -----------------------------
-# Health
+# AI Call Function
+# -----------------------------
+def ask_ai(user_text):
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0.85,
+        max_tokens=250,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_text}
+        ]
+    )
+
+    return response.choices[0].message.content
+
+
+# -----------------------------
+# Health Check
 # -----------------------------
 @app.get("/")
 def home():
-    return {"status": "Radio AI running 🎙️"}
+    return {"message": "Radio AI server is running"}
 
 
 # -----------------------------
-# Chat Logic
+# Chat Flow
 # -----------------------------
 @app.post("/chat")
 def chat(req: ChatRequest):
 
+    global state
     user_msg = req.message.strip()
 
-    # ===== STAGE 1 =====
-    if state["stage"] == "ASK_TOPIC":
-        state["stage"] = "WRITE_SCRIPT"
-        return {
-            "reply": "موضوع برنامه امروز چیه؟ 🎙️"
-        }
+    try:
 
-    # ===== STAGE 2 =====
-    if state["stage"] == "WRITE_SCRIPT":
+        # STEP 1 — Ask topic
+        if state["step"] == "ask_topic":
+            state["step"] = "get_topic"
+            return {"reply": "موضوع برنامه امروز چیه؟ 🎙️"}
 
-        state["topic"] = user_msg
+        # STEP 2 — Save topic
+        elif state["step"] == "get_topic":
+            state["topic"] = user_msg
+            state["step"] = "ask_duration"
+            return {"reply": "مدت برنامه چند دقیقه باشه؟"}
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": RADIO_WRITER_PROMPT},
-                {"role": "user", "content": f"موضوع برنامه: {user_msg}"}
-            ]
-        )
+        # STEP 3 — Save duration
+        elif state["step"] == "ask_duration":
+            state["duration"] = user_msg
+            state["step"] = "ask_tone"
+            return {"reply": "حال‌وهوای اجرا چطور باشه؟ (صمیمی، رسمی، احساسی...)"}
 
-        script = response.choices[0].message.content
-        state["script"] = script
-        state["stage"] = "CONFIRM_SCRIPT"
+        # STEP 4 — Save tone
+        elif state["step"] == "ask_tone":
+            state["tone"] = user_msg
+            state["step"] = "generate_script"
 
-        return {
-            "reply": f"""این متن پیشنهادی برنامه است:
+            prompt = f"""
+یک متن اجرای رادیویی بنویس.
 
-{script}
+موضوع: {state['topic']}
+مدت برنامه: {state['duration']}
+لحن اجرا: {state['tone']}
 
-اگر تایید می‌کنی بنویس: تایید
-یا بگو تغییرش بدم."""
-        }
-
-    # ===== STAGE 3 =====
-    if state["stage"] == "CONFIRM_SCRIPT":
-
-        if "تایید" in user_msg:
-            state["stage"] = "ASK_STYLE"
-            return {
-                "reply": "عالی 👌 حالا بگو اجرا با چه لحنی باشه؟ (مثلاً: صمیمی، هیجانی، زنانه، رسمی، شبانه...)"
-            }
-
-        else:
-            state["stage"] = "WRITE_SCRIPT"
-            return {
-                "reply": "باشه، موضوع رو دوباره بگو تا متن جدید بسازم."
-            }
-
-    # ===== STAGE 4 =====
-    if state["stage"] == "ASK_STYLE":
-
-        style = user_msg
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": STYLE_PROMPT
-                },
-                {
-                    "role": "user",
-                    "content": f"""
-سبک اجرا:
-{style}
-
-{state["script"]}
+متن شنیداری، حرفه‌ای و مناسب گویندگی باشد.
 """
+
+            script = ask_ai(prompt)
+            state["script"] = script
+            state["step"] = "confirm"
+
+            return {
+                "reply": f"🎧 متن پیشنهادی:\n\n{script}\n\nاگر تایید می‌کنی بنویس: تایید"
+            }
+
+        # STEP 5 — Confirmation
+        elif state["step"] == "confirm":
+
+            if "تایید" in user_msg:
+                final_script = state["script"]
+
+                # reset
+                state = {
+                    "step": "ask_topic",
+                    "topic": None,
+                    "duration": None,
+                    "tone": None,
+                    "script": None
                 }
-            ]
-        )
 
-        final_script = response.choices[0].message.content
+                return {
+                    "reply": f"🎙️ متن نهایی آماده اجرا:\n\n{final_script}"
+                }
 
-        state["stage"] = "ASK_TOPIC"  # reset flow
+            else:
+                state["step"] = "ask_tone"
+                return {"reply": "چه تغییری می‌خوای در لحن یا فضا ایجاد کنیم؟"}
 
-        return {
-            "reply": f"""🎧 نسخه نهایی برنامه آماده است:
-
-{final_script}
-
-برای برنامه جدید فقط پیام بده."""
-        }
-
-    raise HTTPException(status_code=400, detail="Invalid state")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
